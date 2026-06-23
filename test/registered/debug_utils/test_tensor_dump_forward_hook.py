@@ -14,8 +14,8 @@ from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.models.qwen2 import Qwen2MLP
 from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
-from sglang.srt.utils import add_prefix, get_device, get_distributed_backend
-from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
+from sglang.srt.utils import add_prefix, get_device, get_device_distributed_backend
+from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci, register_xpu_ci
 
 register_cuda_ci(
     est_time=9,
@@ -26,6 +26,11 @@ register_cuda_ci(
 register_amd_ci(
     est_time=15,
     suite="stage-b-test-1-gpu-small-amd",
+    disabled="Test uses pytest-style function without TestCase class - see #17145",
+)
+register_xpu_ci(
+    est_time=15,
+    suite="stage-b-test-1-gpu-xpu",
     disabled="Test uses pytest-style function without TestCase class - see #17145",
 )
 
@@ -78,7 +83,7 @@ def init_weights(module):
 
 def test_model_forward_dump(tmp_path):
     set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
-    backend = get_distributed_backend()
+    backend = get_device_distributed_backend()
     device = get_device()
     init_distributed_environment(
         backend=backend,
@@ -90,7 +95,7 @@ def test_model_forward_dump(tmp_path):
     initialize_model_parallel()
     model = MockCausalLM()
     model.apply(init_weights)
-    model.to(device).bfloat16()
+    model = model.to(device).bfloat16()
     dumper = register_forward_hook_for_model(
         model, tmp_path / "sglang_dump", [0], 0, 0, 0
     )
