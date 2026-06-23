@@ -95,6 +95,7 @@ from typing_extensions import Literal
 from sglang.srt.environ import envs
 from sglang.srt.observability.func_timer import enable_func_timer
 from sglang.srt.platforms import current_platform
+from sglang.srt.platforms.device_mixin import _DEVICE_TO_DISTRIBUTED_BACKEND
 from sglang.srt.utils.video_decoder import _BACKEND, VideoDecoderWrapper
 
 if TYPE_CHECKING:
@@ -2047,11 +2048,9 @@ def is_habana_available() -> bool:
     return find_spec("habana_frameworks") is not None
 
 @lru_cache(maxsize=1)
-def get_distributed_backend() -> str:
+def get_device_distributed_backend() -> str:
     device = get_device().lower()
-
-    backend_map = {"cuda": "nccl", "xpu": "xccl"}
-    return backend_map[device]
+    return _DEVICE_TO_DISTRIBUTED_BACKEND.get(device, "gloo")
 
 @lru_cache(maxsize=8)
 def get_device(device_id: Optional[int] = None) -> str:
