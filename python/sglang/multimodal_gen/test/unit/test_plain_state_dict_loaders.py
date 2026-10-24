@@ -126,10 +126,12 @@ def _write_checkpoint(path, config, weights):
 @pytest.mark.parametrize("residency", ["component-offload", "resident"])
 @pytest.mark.parametrize("precision", ["fp32", "bf16"])
 def test_real_components_restore_weights_and_exact_policy(
-    tmp_path, role, class_name, config_cls, raw_config, residency, precision
+    request, tmp_path, role, class_name, config_cls, raw_config, residency, precision
 ):
     if residency == "resident" and not torch.cuda.is_available():
         pytest.skip("CUDA is required")
+    # The dual-tower bridge sizes its layers from the TP group.
+    request.getfixturevalue("single_process_model_parallel")
     config = config_cls()
     config.update_model_arch(raw_config)
     model_cls, _ = ModelRegistry.resolve_model_cls(class_name)

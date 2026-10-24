@@ -273,8 +273,10 @@ def test_comfy_marker_conflicting_values_rejected(tmp_path):
 @pytest.mark.parametrize("missing", [False, True])
 @pytest.mark.parametrize("competing_index", [False, True])
 def test_native_encoder_restoration_checks_checkpoint_before_fallback(
-    tmp_path, missing, competing_index
+    request, tmp_path, missing, competing_index
 ):
+    # The customized loader resolves the encoder data-parallel group.
+    request.getfixturevalue("single_process_model_parallel")
     config = transformers.T5Config(
         vocab_size=32,
         d_model=8,

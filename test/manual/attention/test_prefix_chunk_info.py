@@ -207,6 +207,7 @@ class TestPrefixChunkInfo(CustomTestCase):
             # attn_backend that carries the pools (Pattern A invariant).
             from types import SimpleNamespace
 
+            from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
             from sglang.srt.model_executor.forward_context import (
                 ForwardContext,
                 set_forward_context,
@@ -215,10 +216,20 @@ class TestPrefixChunkInfo(CustomTestCase):
             mock_backend = SimpleNamespace(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool=self.token_to_kv_pool,
+                kv_index_translator=KVIndexTranslator(
+                    req_to_token=self.req_to_token_pool.req_to_token,
+                    token_to_kv_pool_allocator=None,
+                    token_to_kv_pool=self.token_to_kv_pool,
+                    page_size=1,
+                    device=self.device,
+                ),
             )
             set_forward_context(ForwardContext(attn_backend=mock_backend))
 
-            forward_batch.prepare_chunked_prefix_cache_info(self.device)
+            from sglang.srt.runtime_context import get_parallel
+
+            with get_parallel().override(dcp_enabled=False, attn_dcp_size=1):
+                forward_batch.prepare_chunked_prefix_cache_info(self.device)
             assert forward_batch.get_max_chunk_capacity() == max_chunk_capacity
             assert forward_batch.prefix_chunk_len == test_case["prefix_chunk_len"]
             assert forward_batch.num_prefix_chunks == test_case["num_prefix_chunks"]

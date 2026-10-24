@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import multiprocessing
 import os
 import sys
@@ -58,7 +59,10 @@ def test_mooncake_te_condition(server_args: ServerArgs) -> bool:
             ib_device=ib_device,
         )
 
+    from sglang.srt.runtime_context import get_context
+
     with (
+        get_context().override_server_args(**dataclasses.asdict(server_args)),
         patch(
             "sglang.srt.distributed.device_communicators.mooncake_transfer_engine.init_mooncake_transfer_engine",
             side_effect=_fake_init_mooncake_transfer_engine,
@@ -66,6 +70,19 @@ def test_mooncake_te_condition(server_args: ServerArgs) -> bool:
         patch(
             "sglang.srt.distributed.device_communicators.mooncake_transfer_engine.get_local_ip_auto",
             return_value="127.0.0.1",
+        ),
+        # The elastic-EP branch hands the shared engine to mooncake.pg; stub both
+        # so the condition logic runs without a mooncake installation.
+        patch(
+            "sglang.srt.distributed.device_communicators.mooncake_transfer_engine._mooncake_transfer_engine",
+            SimpleNamespace(engine=None),
+        ),
+        patch.dict(
+            sys.modules,
+            {
+                "mooncake": SimpleNamespace(),
+                "mooncake.pg": SimpleNamespace(set_transfer_engine=lambda engine: None),
+            },
         ),
     ):
         from sglang.srt.distributed.device_communicators.mooncake_transfer_engine import (
