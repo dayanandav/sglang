@@ -1,6 +1,6 @@
 ---
 title: PPLX-Decider-v1-27B
-description: "Deploy PPLX-Decider-v1-27B with SGLang. Perplexity's decision model, fine-tuned from Qwen3.8-27B, returns calibrated probabilities for choice, yes or no, and score questions on /v1/systemone, on one NVIDIA H200 or GB300 in BF16."
+description: "Deploy PPLX-Decider-v1-27B with SGLang. Perplexity's decision model, fine-tuned from Qwen3.8-27B, returns calibrated probabilities for choice, yes or no, and score questions on /v1/systemone, on one NVIDIA H200 or GB300, or four Intel Arc Pro B60, in BF16."
 ---
 
 ## Deployment
@@ -50,6 +50,8 @@ import { benchmarks } from "/src/snippets/configs/perplexity-ai/pplx-decider-v1-
 <Note>
   The H200 recipe is the original one, validated against the checkpoint's own reference implementation on one H200 when support landed ([#42183](https://github.com/sgl-project/sglang/pull/42183)), and it has no speed numbers yet. The GB300 recipe adds `--disable-radix-cache` (see [Configuration Tips](#2-configuration-tips)) and was measured end to end on one GB300 at SGLang commit `70f0b7351e`: four request shapes from 1 to 256 concurrent requests, Belebele and WinoGrande accuracy, and per-question parity with the reference implementation. [§3](#3-benchmarks) has the method and the full tables.
 </Note>
+
+The command panel covers NVIDIA GPUs only. For Intel Arc Pro B60, see [§5](#5-intel-arc-pro-b60).
 
 ## Playground
 
@@ -561,3 +563,45 @@ print(response.json()["answers"]["color"])
 ```
 
 </Accordion>
+
+## 5. Intel Arc Pro B60
+
+The BF16 weights (52 GB) do not fit two 24 GB Arc Pro B60 cards, so serve the model tensor parallel over four. Three cards do not work either: the tensor-parallel degree must divide the 4 KV heads and the 16 Gated DeltaNet key heads.
+
+```bash Command
+ZE_AFFINITY_MASK=0,1,2,3 sglang serve \
+  --model-path perplexity-ai/pplx-decider-v1-27b \
+  --device xpu --tp 4 \
+  --mem-fraction-static 0.85 \
+  --disable-radix-cache \
+  --attention-backend intel_xpu --page-size 64 \
+  --host 0.0.0.0 --port 30000
+```
+
+- **`--mem-fraction-static 0.85`.** The weights take 12.95 GB per card. The default static fraction on a 24 GB card (0.58) leaves under 1 GB per card for the KV and Gated DeltaNet state pools; with the prefix cache on, the server then capped `max_running_requests` at 1. At 0.85 each card holds about 250,000 KV tokens and the cap is 94 requests.
+- **`--disable-radix-cache`.** Same reason as on GB300 ([§2](#2-configuration-tips)): unique-state traffic reuses nothing, and each request holds one state slot instead of five.
+- **`--attention-backend intel_xpu --page-size 64`.** Without them, the full-attention layers run on Triton with 1-token pages. The `intel_xpu` flash-attention kernel takes an 8K-token state from 10.4 s to 2.7 s and raises the saturated throughput from about 2,800 to 3,360 prompt tokens per second, with the same accuracy. It makes single image requests 12-14% slower at 1 and 16 concurrent requests, so leave the two flags off for image-heavy traffic at low concurrency.
+- **PCIe links.** Every layer all-reduces over PCIe, which is about a third of prefill time, so pick four cards whose upstream links train at PCIe Gen5 (check `current_link_speed` of each card's upstream port in sysfs). A card on a degraded link slows every request.
+
+Measured with the command above on four Arc Pro B60 on PCIe Gen5 x8 links, at SGLang `main` commit `4709a3a24e`, with the client and request shapes of [§3](#3-benchmarks):
+
+| Request | Concurrent | Median latency | Requests/s | Prompt tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| Short question, 382 tokens | 1 | 205 ms | 4.89 | 1,869 |
+| | 4 | 703 ms | 5.30 | 2,023 |
+| | 16 | 1,993 ms | 6.46 | 2,467 |
+| | 64 | 7,246 ms | 8.77 | 3,352 |
+| | 256 | 12,070 ms | 8.80 | 3,361 |
+| Four questions on a 1K-token state, 4,540 tokens | 1 | 1,463 ms | 0.68 (2.7 decisions/s) | 3,086 |
+| | 8 | 10,788 ms | 0.74 (3.0 decisions/s) | 3,356 |
+| | 32 | 43,125 ms | 0.74 (3.0 decisions/s) | 3,362 |
+| 8K-token state, 8,224 tokens | 1 | 2,703 ms | 0.37 | 3,026 |
+| | 4 | 10,059 ms | 0.39 | 3,228 |
+| | 16 | 40,017 ms | 0.39 | 3,246 |
+| One 1024×768 image, 429 tokens | 1 | 450 ms | 2.26 | 970 |
+| | 16 | 3,986 ms | 4.02 | 1,725 |
+| | 64 | 12,322 ms | 4.85 | 2,082 |
+
+Four B60 top out at about 3,360 prompt tokens per second for every text shape, about an eighth of one GB300. A profile of a saturated 4K-token prefill chunk shows why: 43% of the GPU time is GEMMs, at about 93 TFLOPS per card, and 35% is the all-reduce, which moves 18 GB/s of bus bandwidth, close to what one card-to-card PCIe link carries.
+
+Accuracy matches the other recipes. The Belebele script in [§3](#3-benchmarks) scores 870 of 900 (96.67%). WinoGrande scores 84.53% when asked "Which option correctly fills the blank (_) in the sentence?" with the two candidates as options. Against the same SGLang commit on an NVIDIA A100, the B60 picks the same option on 900 of 900 Belebele items and 1,258 of 1,267 WinoGrande items, and the largest probability difference per item averages 0.0014 and 0.0039 (maximum 0.05).
